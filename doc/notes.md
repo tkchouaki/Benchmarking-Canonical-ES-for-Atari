@@ -46,6 +46,9 @@ We going throught neural networks again ...
 
 A big table, a lot of stories about results in games & youtube videos.
 
+
+
+
 ## Recent related works
 
 Similarly to our work, Such et al. [2017] studied the performance
