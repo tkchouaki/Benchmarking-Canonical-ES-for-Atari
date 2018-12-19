@@ -4,6 +4,10 @@ import io
 import os
 import sys
 import time
+
+from azure.batch.models import ResourceFile
+from azure.storage.blob import BlobPermissions
+
 import config
 
 try:
@@ -213,17 +217,23 @@ def add_tasks(batch_service_client, job_id, input_files):
     batch_service_client.task.add_collection(job_id, tasks)
 
 
-def add_cmd_tasks(batch_service_client, job_id, commands):
+def add_cmd_tasks(batch_service_client, job_id, commands, input_files):
     print("Adding {} tasks to job [{}]".format(len(commands), job_id))
 
     tasks = list()
 
     for i in range(len(commands)):
         command = "/bin/bash -c \"{}\"".format(commands[i])
-        tasks.append(batch.models.TaskAddParameter(
-            id='Task-{}-{}'.format(i, commands[i]),
+        task = batch.models.TaskAddParameter(
+            id='Task{}'.format(i),
             command_line=command,
-        ))
+            resource_files=input_files
+        )
+        task.multi_instance_settings = batch.models.multi_instance_settings.MultiInstanceSettings(
+            number_of_instances=config._POOL_NODE_COUNT,
+            coordination_command_line="ls > /dev/null"
+        )
+        tasks.append(task)
 
     batch_service_client.task.add_collection(job_id, tasks)
 
@@ -313,7 +323,7 @@ def _read_stream_as_string(stream, encoding):
         return output.getvalue().decode(encoding)
     finally:
         output.close()
-    raise RuntimeError('could not write data to stream or decode bytes')
+        raise RuntimeError('could not write data to stream or decode bytes')
 
 
 if __name__ == '__main__':
@@ -331,15 +341,38 @@ if __name__ == '__main__':
 
     # Use the blob client to create the containers in Azure Storage if they
     # don't yet exist.
-
     input_container_name = 'input'
     blob_client.create_container(input_container_name, fail_on_exist=False)
+
+    # The collection of data files that are to be processed by the tasks.
+    # file_path = os.path.join(sys.path[0], 'test.py')
+
+    # Upload the data files.
+    # input_file = upload_file_to_container(blob_client, input_container_name, file_path)
+    container_name = 'input'
+    input_files = []
+    generator = blob_client.list_blobs(container_name)
+
+    for blob in generator:
+        sas_token = blob_client.generate_blob_shared_access_signature(
+            container_name,
+            blob.name,
+            permission=BlobPermissions.READ,
+            expiry=datetime.datetime.utcnow() + datetime.timedelta(hours=12))
+
+        sas_url = blob_client.make_blob_url(
+            container_name,
+            blob.name,
+            sas_token=sas_token)
+
+        input_files.append(ResourceFile(file_path=blob.name, blob_source=sas_url))
 
 
     # Create a Batch service client. We'll now be interacting with the Batch
     # service in addition to Storage
-    credentials = batch_auth.SharedKeyCredentials(config._BATCH_ACCOUNT_NAME,
-                                                  config._BATCH_ACCOUNT_KEY)
+    credentials = batch_auth.SharedKeyCredentials(
+        config._BATCH_ACCOUNT_NAME,
+        config._BATCH_ACCOUNT_KEY)
 
     batch_client = batch.BatchServiceClient(
         credentials,
@@ -348,20 +381,24 @@ if __name__ == '__main__':
     try:
         # Create the pool that will contain the compute nodes that will execute the
         # tasks.
-        create_pool(batch_client, config._POOL_ID)
+        # create_pool(batch_client, config._POOL_ID)
 
         # Create the job that will run the tasks.
-        # create_job(batch_client, config._JOB_ID, config._POOL_ID)
+        create_job(batch_client, config._JOB_ID, config._POOL_ID)
 
         # Add the tasks to the job.
-        add_cmd_tasks(batch_client, config._JOB_ID, ["cat .bashrc"])
+        add_cmd_tasks(batch_client, config._JOB_ID, [
+            "mpirun --bind-to core --map-by node --report-bindings python3 main.py -g \"Pong\" -e 1 -c \"configurations/sample_configuration.json\""
+        ], input_files)
 
         # Pause execution until tasks reach Completed state.
-        wait_for_tasks_to_complete(batch_client,
-                                   config._JOB_ID,
-                                   datetime.timedelta(minutes=30))
+        wait_for_tasks_to_complete(
+            batch_client,
+            config._JOB_ID,
+            datetime.timedelta(minutes=30)
+        )
 
-        print("  Success! All tasks reached the 'Completed' state within the "
+        print("Success! All tasks reached the 'Completed' state within the "
               "specified timeout period.")
 
         # Print the stdout.txt and stderr.txt files for each task to the console

@@ -1,0 +1,17 @@
+FROM tensorflow/tensorflow:latest-py3
+
+RUN apt-get update \
+&& apt-get install -y python3 python3-pip openmpi-bin libopenmpi-dev python-opencv
+
+RUN apt-get install -y python3-numpy python3-scipy
+
+RUN pip3 install gym mpi4py opencv-python
+RUN pip3 install gym[atari]
+
+ADD Canonical_ES_Atari /app/
+
+WORKDIR /app
+
+VOLUME /app/logs_mpi
+
+CMD mpirun --allow-run-as-root --bind-to core --map-by node -report-bindings python3 main.py -e 2 -g Pong -c configurations/sample_configuration.json -r CES
